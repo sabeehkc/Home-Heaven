@@ -10,8 +10,10 @@ import { DateRange } from "react-date-range";
 import Loader from "../components/Loader";
 import Navbar from "../components/Navbar";
 import { useSelector } from "react-redux";
-import Footer from "../components/Footer"
+import Footer from "../components/Footer";
 import { BASE_URL } from "../redux/constants";
+import io from "socket.io-client";
+import { Send } from "@mui/icons-material";
 
 const ListingDetails = () => {
   const [loading, setLoading] = useState(true);
@@ -65,6 +67,89 @@ const ListingDetails = () => {
   const customerId = useSelector((state) => state?.user?._id)
 
   const navigate = useNavigate()
+
+  /* CHAT LOGIC */
+  const [socket, setSocket] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState("");
+  const hostId = listing?.creator?._id;
+
+  const isHost = customerId === hostId;
+  const [guestList, setGuestList] = useState([]);
+  const [selectedGuestId, setSelectedGuestId] = useState(null);
+
+  // Fetch guests if user is host
+  useEffect(() => {
+    if (customerId && hostId && isHost) {
+      const fetchGuests = async () => {
+        try {
+          const res = await fetch(`${BASE_URL}/messages/guests/${listingId}/${hostId}`);
+          const data = await res.json();
+          setGuestList(data);
+          if (data.length > 0) {
+            setSelectedGuestId(data[0]._id); // default select first
+          }
+        } catch (err) {
+          console.log("Fetch guests failed", err);
+        }
+      };
+      fetchGuests();
+    }
+  }, [customerId, hostId, listingId, isHost]);
+
+  const chatPartnerId = isHost ? selectedGuestId : hostId;
+
+  useEffect(() => {
+    if (customerId && hostId && chatPartnerId) {
+      const newSocket = io(BASE_URL.replace("/api", "")); // Connect to server
+      setSocket(newSocket);
+
+      const room = `${listingId}-${[customerId, chatPartnerId].sort().join("-")}`;
+      newSocket.emit("join_room", room);
+
+      const fetchMessages = async () => {
+        try {
+          const res = await fetch(`${BASE_URL}/messages/${listingId}/${customerId}/${chatPartnerId}`);
+          const data = await res.json();
+          setMessages(data);
+        } catch (err) {
+          console.log("Fetch messages failed", err);
+        }
+      };
+      fetchMessages();
+
+      return () => newSocket.close();
+    } else {
+      setMessages([]);
+    }
+  }, [customerId, hostId, listingId, chatPartnerId]);
+
+  useEffect(() => {
+    if (socket) {
+      socket.on("receive_message", (message) => {
+        setMessages((prev) => {
+          // Prevent duplicate messages if already in state
+          if (prev.find(m => m._id === message._id)) return prev;
+          return [...prev, message];
+        });
+      });
+    }
+  }, [socket]);
+
+  const sendMessage = () => {
+    if (newMessage.trim() !== "" && socket && chatPartnerId) {
+      const room = `${listingId}-${[customerId, chatPartnerId].sort().join("-")}`;
+      const messageData = {
+        room,
+        listingId,
+        senderId: customerId,
+        receiverId: chatPartnerId,
+        text: newMessage,
+      };
+      socket.emit("send_message", messageData);
+      setNewMessage("");
+    }
+  };
 
   const handleSubmit = async () => {
     try {
@@ -188,6 +273,49 @@ const ListingDetails = () => {
             </div>
           </div>
         </div>
+
+        {customerId && (isHost ? guestList.length > 0 : true) && (
+          <div className="chat-container">
+            <h2>{isHost ? "Chat with Guests" : "Chat with Host"}</h2>
+            
+            <div className="chat-layout">
+              {isHost && (
+                <div className="guest-list">
+                  {guestList.map(guest => (
+                    <div 
+                      key={guest._id} 
+                      className={`guest-item ${selectedGuestId === guest._id ? 'selected' : ''}`}
+                      onClick={() => setSelectedGuestId(guest._id)}
+                    >
+                      <img src={`${BASE_URL}/${guest.profileImagePath.replace("public", "")}`} alt="profile" />
+                      <p>{guest.firstName} {guest.lastName}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="chat-box">
+                <div className="chat-messages">
+                  {messages.map((msg, index) => (
+                    <div key={index} className={`message ${msg.senderId === customerId ? 'sent' : 'received'}`}>
+                      <p>{msg.text}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="chat-input">
+                  <input 
+                    type="text" 
+                    placeholder="Type a message..." 
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+                  />
+                  <button onClick={sendMessage} className="send-btn"><Send /></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <Footer />
